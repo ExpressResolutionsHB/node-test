@@ -3,12 +3,13 @@ const url = require("url");
 const https = require("https");
 
 // ===== RapidAPI config =====
-const key = process.env.RAPIDAPI_KEY;
+const key = "d90acb5d7emsh84d1ba137ac1a63p10cbe3jsn84f9e64afa82";
 const rapidHost = "zllw-working-api.p.rapidapi.com";
 
 const headers = {
   "x-rapidapi-key": key,
   "x-rapidapi-host": rapidHost,
+  "Content-Type": "application/json",
   "Accept": "application/json"
 };
 // ===========================
@@ -44,7 +45,9 @@ const server = http.createServer((req, res) => {
     "/pro/byaddress?address=" +
     encodeURIComponent(fullAddress);
 
-  https.get(apiUrl, { headers }, apiRes => {
+  const options = { headers };
+
+  https.get(apiUrl, options, apiRes => {
     let data = "";
 
     apiRes.on("data", chunk => {
@@ -55,31 +58,21 @@ const server = http.createServer((req, res) => {
       try {
         const parsed = JSON.parse(data);
 
-        // 🔒 KEEP THIS LOGIC — THIS IS WHY IT WORKS
-        const estimatedValue =
-          parsed?.zestimate ||
-          parsed?.price ||
-          parsed?.homeValue ||
-          parsed?.data?.property?.zestimate;
+        // ✅ CORRECT PATH (from your actual response)
+        const zestimate = parsed?.propertyDetails?.zestimate;
 
-        if (!estimatedValue) {
+        if (!zestimate) {
           res.writeHead(404, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ error: "No value returned from Zillow" }));
+          res.end(JSON.stringify({ error: "No Zestimate found" }));
           return;
         }
 
-        const offer = Math.round(estimatedValue * 0.6);
-
-        // ✅ ONLY RETURN WHAT YOU WANT
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(
           JSON.stringify({
-            address: fullAddress,
-            zestimate: estimatedValue,
-            offer: offer
+            zestimate
           })
         );
-
       } catch (err) {
         res.writeHead(500, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ error: "Failed to parse Zillow response" }));
@@ -94,4 +87,3 @@ const server = http.createServer((req, res) => {
 server.listen(3000, () => {
   console.log("Server listening on port 3000");
 });
-
