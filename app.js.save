@@ -1,0 +1,13 @@
+const price = 450000;
+const offerMultiplier = 0.6;
+
+const offer = price * offerMultiplier;
+
+console.log("Estimated value:", price);
+console.log("Offer:", offer);
+
+console.log("Node is running");
+
+
+
+
