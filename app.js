@@ -3,8 +3,9 @@ const url = require("url");
 const https = require("https");
 
 // ===== RapidAPI config =====
+const key =
+  process.env.RAPIDAPI_KEY || "d90acb5d7emsh84d1ba137ac1a63p10cbe3jsn84f9e64afa82";
 const rapidHost = "zllw-working-api.p.rapidapi.com";
-const key = process.env.RAPIDAPI_KEY; // set in Render Env Vars
 
 const headers = {
   "x-rapidapi-key": key,
@@ -12,9 +13,7 @@ const headers = {
   "Content-Type": "application/json",
   "Accept": "application/json"
 };
-
-// ===== Google Sheets webhook (Apps Script Web App URL) =====
-const SHEETS_WEBHOOK = process.env.SHEETS_WEBHOOK; // set in Render Env Vars
+// ===========================
 
 function sendJson(res, status, obj, origin) {
   res.writeHead(status, {
@@ -27,43 +26,10 @@ function sendJson(res, status, obj, origin) {
   res.end(JSON.stringify(obj));
 }
 
-function postToSheets(payload) {
-  return new Promise((resolve) => {
-    if (!SHEETS_WEBHOOK) return resolve(false);
-
-    try {
-      const u = new URL(SHEETS_WEBHOOK);
-      const body = JSON.stringify(payload);
-
-      const req = https.request(
-        {
-          hostname: u.hostname,
-          path: u.pathname + (u.search || ""),
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "Content-Length": Buffer.byteLength(body)
-          }
-        },
-        (r) => {
-          r.on("data", () => {});
-          r.on("end", () => resolve(true));
-        }
-      );
-
-      req.on("error", () => resolve(false));
-      req.write(body);
-      req.end();
-    } catch {
-      resolve(false);
-    }
-  });
-}
-
 const server = http.createServer((req, res) => {
   const origin = req.headers.origin || "*";
 
-  // CORS preflight
+  // Preflight for browser calls
   if (req.method === "OPTIONS") {
     res.writeHead(204, {
       "Access-Control-Allow-Origin": origin,
@@ -77,35 +43,30 @@ const server = http.createServer((req, res) => {
 
   const parsedUrl = url.parse(req.url, true);
   const pathname = parsedUrl.pathname;
-  const q = parsedUrl.query;
+  const query = parsedUrl.query;
 
   if (pathname !== "/value") {
     sendJson(res, 404, { error: "Use /value with address fields" }, origin);
     return;
   }
 
-  // Required address fields
-  const street = (q.street || "").trim();
-  const city   = (q.city || "").trim();
-  const state  = (q.state || "").trim();
-  const zip    = (q.zip || "").trim();
+  const street = (query.street || "").trim();
+  const city = (query.city || "").trim();
+  const state = (query.state || "").trim();
+  const zip = (query.zip || "").trim();
+
+  // Optional lead fields (not stored yet)
+  const name = (query.name || "").trim();
+  const email = (query.email || "").trim();
+  const phone = (query.phone || "").trim();
 
   if (!street || !city || !state || !zip) {
     sendJson(res, 400, { error: "Missing fields. Use ?street=&city=&state=&zip=" }, origin);
     return;
   }
 
-  // Optional lead fields
-  const name  = (q.name || "").trim();
-  const email = (q.email || "").trim();
-  const phone = (q.phone || "").trim();
-
-  if (!key) {
-    sendJson(res, 500, { error: "Missing RAPIDAPI_KEY env var on server" }, origin);
-    return;
-  }
-
   const fullAddress = `${street}, ${city}, ${state} ${zip}`;
+
   const apiUrl =
     "https://" +
     rapidHost +
@@ -115,12 +76,14 @@ const server = http.createServer((req, res) => {
   https
     .get(apiUrl, { headers }, (apiRes) => {
       let data = "";
+
       apiRes.on("data", (chunk) => (data += chunk));
-      apiRes.on("end", async () => {
+
+      apiRes.on("end", () => {
         try {
           const parsed = JSON.parse(data);
 
-          // pull zestimate from common locations
+          // This matches the real response you pasted earlier
           const zestimate =
             parsed?.propertyDetails?.zestimate ??
             parsed?.zestimate ??
@@ -132,28 +95,21 @@ const server = http.createServer((req, res) => {
             return;
           }
 
-          // Offer range: zestimate * .55 to .65
-          const offerLow  = Math.round(Number(zestimate) * 0.55);
+          // Offer range = Zestimate * .55 to .65
+          const offerLow = Math.round(Number(zestimate) * 0.55);
           const offerHigh = Math.round(Number(zestimate) * 0.65);
 
-          // Store lead if any info provided
-          if (name || email || phone) {
-            await postToSheets({
-              name,
-              email,
-              phone,
-              street,
-              city,
-              state,
-              zip,
+          // Return ONLY what you want (offer range) + keep lead fields if you want to view them
+          sendJson(
+            res,
+            200,
+            {
               offerLow,
               offerHigh
-            });
-          }
-
-          // Return only offer range
-          sendJson(res, 200, { offerLow, offerHigh }, origin);
-        } catch {
+            },
+            origin
+          );
+        } catch (err) {
           sendJson(res, 500, { error: "Failed to parse Zillow response" }, origin);
         }
       });
