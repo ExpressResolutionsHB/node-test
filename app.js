@@ -2,18 +2,16 @@ const http = require("http");
 const url = require("url");
 const https = require("https");
 
-// ===== RapidAPI config =====
-const key =
-  process.env.RAPIDAPI_KEY || "d90acb5d7emsh84d1ba137ac1a63p10cbe3jsn84f9e64afa82";
-const rapidHost = "zllw-working-api.p.rapidapi.com";
+const RAPIDAPI_KEY =
+  process.env.RAPIDAPI_KEY || "PASTE_YOUR_RAPIDAPI_KEY_HERE";
+const RAPID_HOST = "zllw-working-api.p.rapidapi.com";
 
 const headers = {
-  "x-rapidapi-key": key,
-  "x-rapidapi-host": rapidHost,
+  "x-rapidapi-key": RAPIDAPI_KEY,
+  "x-rapidapi-host": RAPID_HOST,
+  "Accept": "application/json",
   "Content-Type": "application/json",
-  "Accept": "application/json"
 };
-// ===========================
 
 function sendJson(res, status, obj, origin) {
   res.writeHead(status, {
@@ -21,21 +19,48 @@ function sendJson(res, status, obj, origin) {
     "Access-Control-Allow-Origin": origin || "*",
     "Access-Control-Allow-Methods": "GET, OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type, Accept",
-    "Vary": "Origin"
+    "Vary": "Origin",
   });
   res.end(JSON.stringify(obj));
+}
+
+function toNumber(v) {
+  if (v == null) return null;
+  if (typeof v === "number" && Number.isFinite(v)) return v;
+  const s = String(v).replace(/[^\d.]/g, "");
+  const n = Number(s);
+  return Number.isFinite(n) ? n : null;
+}
+
+function extractZestimate(parsed) {
+  // Your real response had: raw.propertyDetails.zestimate (and also adTargets.zestimate)
+  const candidates = [
+    parsed?.propertyDetails?.zestimate,
+    parsed?.propertyDetails?.adTargets?.zestimate,
+    parsed?.propertyDetails?.price,
+    parsed?.zestimate,
+    parsed?.price,
+    parsed?.homeValue,
+    parsed?.data?.property?.zestimate,
+  ];
+
+  for (const c of candidates) {
+    const n = toNumber(c);
+    if (n) return n;
+  }
+  return null;
 }
 
 const server = http.createServer((req, res) => {
   const origin = req.headers.origin || "*";
 
-  // Preflight for browser calls
+  // CORS preflight
   if (req.method === "OPTIONS") {
     res.writeHead(204, {
       "Access-Control-Allow-Origin": origin,
       "Access-Control-Allow-Methods": "GET, OPTIONS",
       "Access-Control-Allow-Headers": "Content-Type, Accept",
-      "Vary": "Origin"
+      "Vary": "Origin",
     });
     res.end();
     return;
@@ -43,22 +68,17 @@ const server = http.createServer((req, res) => {
 
   const parsedUrl = url.parse(req.url, true);
   const pathname = parsedUrl.pathname;
-  const query = parsedUrl.query;
+  const q = parsedUrl.query;
 
   if (pathname !== "/value") {
     sendJson(res, 404, { error: "Use /value with address fields" }, origin);
     return;
   }
 
-  const street = (query.street || "").trim();
-  const city = (query.city || "").trim();
-  const state = (query.state || "").trim();
-  const zip = (query.zip || "").trim();
-
-  // Optional lead fields (not stored yet)
-  const name = (query.name || "").trim();
-  const email = (query.email || "").trim();
-  const phone = (query.phone || "").trim();
+  const street = (q.street || "").trim();
+  const city = (q.city || "").trim();
+  const state = (q.state || "").trim();
+  const zip = (q.zip || "").trim();
 
   if (!street || !city || !state || !zip) {
     sendJson(res, 400, { error: "Missing fields. Use ?street=&city=&state=&zip=" }, origin);
@@ -66,50 +86,34 @@ const server = http.createServer((req, res) => {
   }
 
   const fullAddress = `${street}, ${city}, ${state} ${zip}`;
-
   const apiUrl =
-    "https://" +
-    rapidHost +
-    "/pro/byaddress?address=" +
-    encodeURIComponent(fullAddress);
+    "https://" + RAPID_HOST + "/pro/byaddress?address=" + encodeURIComponent(fullAddress);
 
   https
     .get(apiUrl, { headers }, (apiRes) => {
       let data = "";
-
       apiRes.on("data", (chunk) => (data += chunk));
-
       apiRes.on("end", () => {
         try {
           const parsed = JSON.parse(data);
-
-          // This matches the real response you pasted earlier
-          const zestimate =
-            parsed?.propertyDetails?.zestimate ??
-            parsed?.zestimate ??
-            parsed?.price ??
-            null;
+          const zestimate = extractZestimate(parsed);
 
           if (!zestimate) {
-            sendJson(res, 404, { error: "No Zestimate found" }, origin);
+            sendJson(
+              res,
+              404,
+              {
+                error: "No Zestimate found",
+                address: fullAddress,
+                zillowURL: parsed?.zillowURL || parsed?.propertyDetails?.zillowURL || null,
+              },
+              origin
+            );
             return;
           }
 
-          // Offer range = Zestimate * .55 to .65
-          const offerLow = Math.round(Number(zestimate) * 0.55);
-          const offerHigh = Math.round(Number(zestimate) * 0.65);
-
-          // Return ONLY what you want (offer range) + keep lead fields if you want to view them
-          sendJson(
-            res,
-            200,
-            {
-              offerLow,
-              offerHigh
-            },
-            origin
-          );
-        } catch (err) {
+          sendJson(res, 200, { address: fullAddress, zestimate }, origin);
+        } catch (e) {
           sendJson(res, 500, { error: "Failed to parse Zillow response" }, origin);
         }
       });
