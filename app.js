@@ -70,6 +70,11 @@ const server = http.createServer((req, res) => {
   const pathname = parsedUrl.pathname;
   const q = parsedUrl.query;
 
+  if (pathname === "/health") {
+  sendJson(res, 200, { ok: true }, origin);
+  return;
+  }
+
   if (pathname !== "/value") {
     sendJson(res, 404, { error: "Use /value with address fields" }, origin);
     return;
