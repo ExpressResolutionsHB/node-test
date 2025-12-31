@@ -1,17 +1,19 @@
 const http = require("http");
-const url = require("url");
 const https = require("https");
+const url = require("url");
 
-const RAPIDAPI_KEY =
-  process.env.RAPIDAPI_KEY || "PASTE_YOUR_RAPIDAPI_KEY_HERE";
-const RAPID_HOST = "zllw-working-api.p.rapidapi.com";
+// ===== RapidAPI config =====
+const key = process.env.RAPIDAPI_KEY || "PASTE_YOUR_RAPIDAPI_KEY_HERE";
+const rapidHost = "zllw-working-api.p.rapidapi.com";
 
 const headers = {
-  "x-rapidapi-key": RAPIDAPI_KEY,
-  "x-rapidapi-host": RAPID_HOST,
-  "Accept": "application/json",
-  "Content-Type": "application/json",
+  "x-rapidapi-key": key,
+  "x-rapidapi-host": rapidHost,
+  "Accept": "application/json"
 };
+
+// Keep-alive speeds up repeated calls a lot
+const httpsAgent = new https.Agent({ keepAlive: true, maxSockets: 50 });
 
 function sendJson(res, status, obj, origin) {
   res.writeHead(status, {
@@ -19,39 +21,51 @@ function sendJson(res, status, obj, origin) {
     "Access-Control-Allow-Origin": origin || "*",
     "Access-Control-Allow-Methods": "GET, OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type, Accept",
-    "Vary": "Origin",
+    "Vary": "Origin"
   });
   res.end(JSON.stringify(obj));
 }
 
-function toNumber(v) {
-  if (v == null) return null;
-  if (typeof v === "number" && Number.isFinite(v)) return v;
-  const s = String(v).replace(/[^\d.]/g, "");
-  const n = Number(s);
-  return Number.isFinite(n) ? n : null;
+function fetchZestimate(fullAddress) {
+  return new Promise((resolve, reject) => {
+    const apiUrl =
+      "https://" +
+      rapidHost +
+      "/pro/byaddress?address=" +
+      encodeURIComponent(fullAddress);
+
+    const req = https.get(apiUrl, { headers, agent: httpsAgent }, (apiRes) => {
+      let data = "";
+      apiRes.on("data", (chunk) => (data += chunk));
+      apiRes.on("end", () => {
+        try {
+          const parsed = JSON.parse(data);
+
+          const zestimate =
+            parsed?.propertyDetails?.zestimate ??
+            parsed?.zestimate ??
+            parsed?.price ??
+            parsed?.data?.property?.zestimate ??
+            null;
+
+          if (!zestimate) return reject(new Error("No Zestimate found"));
+          resolve({ zestimate, raw: parsed });
+        } catch {
+          reject(new Error("Failed to parse Zillow response"));
+        }
+      });
+    });
+
+    // Hard timeout (RapidAPI sometimes stalls)
+    req.setTimeout(25000, () => {
+      req.destroy(new Error("Upstream timeout"));
+    });
+
+    req.on("error", (err) => reject(err));
+  });
 }
 
-function extractZestimate(parsed) {
-  // Your real response had: raw.propertyDetails.zestimate (and also adTargets.zestimate)
-  const candidates = [
-    parsed?.propertyDetails?.zestimate,
-    parsed?.propertyDetails?.adTargets?.zestimate,
-    parsed?.propertyDetails?.price,
-    parsed?.zestimate,
-    parsed?.price,
-    parsed?.homeValue,
-    parsed?.data?.property?.zestimate,
-  ];
-
-  for (const c of candidates) {
-    const n = toNumber(c);
-    if (n) return n;
-  }
-  return null;
-}
-
-const server = http.createServer((req, res) => {
+const server = http.createServer(async (req, res) => {
   const origin = req.headers.origin || "*";
 
   // CORS preflight
@@ -60,7 +74,7 @@ const server = http.createServer((req, res) => {
       "Access-Control-Allow-Origin": origin,
       "Access-Control-Allow-Methods": "GET, OPTIONS",
       "Access-Control-Allow-Headers": "Content-Type, Accept",
-      "Vary": "Origin",
+      "Vary": "Origin"
     });
     res.end();
     return;
@@ -70,9 +84,10 @@ const server = http.createServer((req, res) => {
   const pathname = parsedUrl.pathname;
   const q = parsedUrl.query;
 
+  // Health check
   if (pathname === "/health") {
-  sendJson(res, 200, { ok: true }, origin);
-  return;
+    sendJson(res, 200, { ok: true }, origin);
+    return;
   }
 
   if (pathname !== "/value") {
@@ -91,41 +106,13 @@ const server = http.createServer((req, res) => {
   }
 
   const fullAddress = `${street}, ${city}, ${state} ${zip}`;
-  const apiUrl =
-    "https://" + RAPID_HOST + "/pro/byaddress?address=" + encodeURIComponent(fullAddress);
 
-  https
-    .get(apiUrl, { headers }, (apiRes) => {
-      let data = "";
-      apiRes.on("data", (chunk) => (data += chunk));
-      apiRes.on("end", () => {
-        try {
-          const parsed = JSON.parse(data);
-          const zestimate = extractZestimate(parsed);
-
-          if (!zestimate) {
-            sendJson(
-              res,
-              404,
-              {
-                error: "No Zestimate found",
-                address: fullAddress,
-                zillowURL: parsed?.zillowURL || parsed?.propertyDetails?.zillowURL || null,
-              },
-              origin
-            );
-            return;
-          }
-
-          sendJson(res, 200, { address: fullAddress, zestimate }, origin);
-        } catch (e) {
-          sendJson(res, 500, { error: "Failed to parse Zillow response" }, origin);
-        }
-      });
-    })
-    .on("error", () => {
-      sendJson(res, 500, { error: "Zillow request failed" }, origin);
-    });
+  try {
+    const { zestimate } = await fetchZestimate(fullAddress);
+    sendJson(res, 200, { address: fullAddress, zestimate }, origin);
+  } catch (e) {
+    sendJson(res, 502, { error: e.message || "Zillow request failed" }, origin);
+  }
 });
 
 const PORT = process.env.PORT || 3000;
